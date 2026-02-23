@@ -1,11 +1,12 @@
 import { useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
-  LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer,
+  XAxis, YAxis, Tooltip, ResponsiveContainer,
   BarChart, Bar, PieChart, Pie, Cell, AreaChart, Area,
 } from 'recharts';
-import { api, DeepDiveResult } from '../api/client';
-import { Card, MetricCard, ConfidenceBadge, LoadingSpinner, PageHeader } from '../components/Cards';
+import { api } from '../api/client';
+import type { DeepDiveResult } from '../api/client';
+import { Card, MetricCard, LoadingSpinner, PageHeader } from '../components/Cards';
 import { ArrowLeft } from 'lucide-react';
 
 const COLORS = ['#06b6d4', '#3b82f6', '#8b5cf6', '#f59e0b', '#22c55e', '#ef4444', '#ec4899', '#14b8a6'];

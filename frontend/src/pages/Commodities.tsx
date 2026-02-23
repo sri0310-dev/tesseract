@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { api, CommodityListItem } from '../api/client';
+import { api } from '../api/client';
+import type { CommodityListItem } from '../api/client';
 import { Card, ConfidenceBadge, LoadingSpinner, EmptyState, PageHeader } from '../components/Cards';
 
 export default function Commodities() {
