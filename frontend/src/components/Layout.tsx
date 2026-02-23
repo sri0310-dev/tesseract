@@ -7,11 +7,13 @@ import {
   ArrowLeftRight,
   Database,
   TrendingUp,
+  Scale,
 } from 'lucide-react';
 
 const NAV_ITEMS = [
   { to: '/', icon: Activity, label: 'Signals' },
   { to: '/commodities', icon: BarChart3, label: 'Commodities' },
+  { to: '/supply-demand', icon: Scale, label: 'S&D Tracker' },
   { to: '/corridors', icon: GitCompareArrows, label: 'Corridors' },
   { to: '/counterparty', icon: Users, label: 'Counterparty' },
   { to: '/arbitrage', icon: ArrowLeftRight, label: 'Arb Scanner' },
