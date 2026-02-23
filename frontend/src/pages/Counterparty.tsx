@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
-import { api, CommodityListItem, MarketShareResult, Anomaly } from '../api/client';
+import { api } from '../api/client';
+import type { CommodityListItem, MarketShareResult, Anomaly } from '../api/client';
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer,
 } from 'recharts';

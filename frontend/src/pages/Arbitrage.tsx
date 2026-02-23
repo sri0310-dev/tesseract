@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
-import { api, CommodityListItem, ArbOpportunity } from '../api/client';
+import { api } from '../api/client';
+import type { CommodityListItem, ArbOpportunity } from '../api/client';
 import { Card, ConfidenceBadge, LoadingSpinner, EmptyState, PageHeader } from '../components/Cards';
 import { ArrowRight } from 'lucide-react';
 

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
-import { api, CorridorListItem, CorridorCompareResult } from '../api/client';
+import { api } from '../api/client';
+import type { CorridorListItem, CorridorCompareResult } from '../api/client';
 import { Card, ConfidenceBadge, LoadingSpinner, EmptyState, PageHeader, MetricCard } from '../components/Cards';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts';
 

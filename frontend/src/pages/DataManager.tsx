@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
-import { api, HarvestJob, RecordStat, HarvestResult } from '../api/client';
-import { Card, LoadingSpinner, PageHeader, MetricCard } from '../components/Cards';
+import { api } from '../api/client';
+import type { HarvestJob, RecordStat, HarvestResult } from '../api/client';
+import { Card, PageHeader, MetricCard } from '../components/Cards';
 import { Play, Database, RefreshCw } from 'lucide-react';
 
 export default function DataManager() {

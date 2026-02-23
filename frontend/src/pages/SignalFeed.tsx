@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
-import { api, Signal } from '../api/client';
+import { api } from '../api/client';
+import type { Signal } from '../api/client';
 import { Card, SeverityBadge, LoadingSpinner, EmptyState, PageHeader } from '../components/Cards';
 import { AlertTriangle, TrendingDown, TrendingUp, UserPlus, Zap } from 'lucide-react';
 
@@ -58,9 +59,9 @@ export default function SignalFeed() {
                     <div className="text-sm leading-relaxed" style={{ color: 'var(--text-primary)' }}>
                       {sig.headline}
                     </div>
-                    {sig.detail?.implication && (
+                    {sig.detail?.implication != null && (
                       <div className="text-xs mt-1.5" style={{ color: 'var(--text-secondary)' }}>
-                        {String(sig.detail.implication)}
+                        {sig.detail.implication as string}
                       </div>
                     )}
                   </div>
