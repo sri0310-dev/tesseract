@@ -254,6 +254,7 @@ export interface SDDeltaResult {
   signal: string;
   implication: string;
   country_breakdown: { country: string; volume_mt: number; share_pct: number }[];
+  record_count: number;
 }
 
 export interface FlowResult {

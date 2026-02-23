@@ -97,7 +97,7 @@ export function EmptyState({ message }: { message: string }) {
       <div className="text-4xl mb-3 opacity-30">~</div>
       <div style={{ color: 'var(--text-muted)' }}>{message}</div>
       <div className="text-xs mt-2" style={{ color: 'var(--text-muted)' }}>
-        Run a harvest job to pull trade data from Eximpedia
+        Data loads automatically on startup. Visit the Data page to fetch additional commodities.
       </div>
     </div>
   );

@@ -3,6 +3,7 @@ import Layout from './components/Layout';
 import SignalFeed from './pages/SignalFeed';
 import Commodities from './pages/Commodities';
 import CommodityDetail from './pages/CommodityDetail';
+import SupplyDemand from './pages/SupplyDemand';
 import Corridors from './pages/Corridors';
 import Counterparty from './pages/Counterparty';
 import Arbitrage from './pages/Arbitrage';
@@ -17,6 +18,7 @@ export default function App() {
           <Route index element={<SignalFeed />} />
           <Route path="/commodities" element={<Commodities />} />
           <Route path="/commodities/:id" element={<CommodityDetail />} />
+          <Route path="/supply-demand" element={<SupplyDemand />} />
           <Route path="/corridors" element={<Corridors />} />
           <Route path="/counterparty" element={<Counterparty />} />
           <Route path="/arbitrage" element={<Arbitrage />} />
