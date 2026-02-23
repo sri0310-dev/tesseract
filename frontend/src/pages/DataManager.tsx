@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react';
 import { api } from '../api/client';
-import type { HarvestJob, RecordStat, HarvestResult } from '../api/client';
+import type { HarvestJob, RecordStat, HarvestResult, HarvestSearchResult } from '../api/client';
 import { Card, PageHeader, MetricCard } from '../components/Cards';
-import { Play, Database, RefreshCw } from 'lucide-react';
+import { Play, Database, RefreshCw, Search } from 'lucide-react';
 
 export default function DataManager() {
   const [jobs, setJobs] = useState<HarvestJob[]>([]);
@@ -11,6 +11,11 @@ export default function DataManager() {
   const [harvesting, setHarvesting] = useState(false);
   const [harvestResults, setHarvestResults] = useState<HarvestResult[]>([]);
   const [runningJob, setRunningJob] = useState<string | null>(null);
+
+  // Search harvest
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searching, setSearching] = useState(false);
+  const [searchResult, setSearchResult] = useState<HarvestSearchResult | null>(null);
 
   const loadData = () => {
     api.listHarvestJobs().then((d) => setJobs(d.jobs)).catch(() => {});
@@ -52,12 +57,95 @@ export default function DataManager() {
     }
   };
 
+  const handleSearch = async () => {
+    if (!searchQuery.trim()) return;
+    setSearching(true);
+    setSearchResult(null);
+    try {
+      const result = await api.harvestBySearch(searchQuery.trim());
+      setSearchResult(result);
+      loadData(); // Refresh stats
+    } catch {
+      setSearchResult({ status: 'ERROR', commodity_query: searchQuery, commodities_matched: [], jobs_executed: 0, total_records_loaded: 0, results: [] });
+    } finally {
+      setSearching(false);
+    }
+  };
+
   return (
     <div className="p-6 max-w-6xl">
       <PageHeader
         title="Data Management"
-        subtitle="Harvest trade data from Eximpedia, monitor record counts, and manage data freshness"
+        subtitle="Search for any commodity to fetch data, or manage existing harvest jobs"
       />
+
+      {/* Search by commodity name */}
+      <Card className="mb-6">
+        <div className="text-xs font-semibold uppercase tracking-wider mb-3" style={{ color: 'var(--text-muted)' }}>
+          Fetch Commodity Data
+        </div>
+        <div className="text-xs mb-3" style={{ color: 'var(--text-secondary)' }}>
+          Type a commodity name (e.g. "cashew", "sesame", "rice", "cotton") — the system will
+          auto-resolve HS codes and pull data from Eximpedia.
+        </div>
+        <div className="flex gap-2">
+          <input
+            type="text"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
+            placeholder="e.g. cashew, sesame, palm oil, cocoa..."
+            className="flex-1 text-sm rounded-md px-3 py-2 border outline-none"
+            style={{ background: 'var(--bg-secondary)', borderColor: 'var(--border)', color: 'var(--text-primary)' }}
+            disabled={searching}
+          />
+          <button
+            onClick={handleSearch}
+            disabled={searching || !searchQuery.trim()}
+            className="flex items-center gap-2 text-sm px-4 py-2 rounded-md transition-colors disabled:opacity-50"
+            style={{ background: 'var(--accent-cyan)', color: '#000' }}
+          >
+            {searching ? (
+              <RefreshCw className="w-4 h-4 animate-spin" />
+            ) : (
+              <Search className="w-4 h-4" />
+            )}
+            {searching ? 'Fetching...' : 'Fetch Data'}
+          </button>
+        </div>
+
+        {searchResult && (
+          <div className="mt-3 p-3 rounded-md text-xs" style={{
+            background: searchResult.status === 'SUCCESS' ? 'rgba(34,197,94,0.1)' :
+              searchResult.status === 'NOT_FOUND' ? 'rgba(245,158,11,0.1)' : 'rgba(239,68,68,0.1)',
+          }}>
+            {searchResult.status === 'SUCCESS' ? (
+              <div>
+                <span style={{ color: 'var(--accent-green)' }}>
+                  Loaded {searchResult.total_records_loaded.toLocaleString()} records
+                </span>
+                <span style={{ color: 'var(--text-secondary)' }}>
+                  {' '}for {searchResult.commodities_matched.join(', ')}
+                  {' '}({searchResult.jobs_executed} jobs executed)
+                </span>
+              </div>
+            ) : searchResult.status === 'NOT_FOUND' ? (
+              <div>
+                <span style={{ color: 'var(--accent-amber)' }}>
+                  No match for "{searchResult.commodity_query}".
+                </span>
+                {searchResult.available && (
+                  <span style={{ color: 'var(--text-secondary)' }}>
+                    {' '}Try: {searchResult.available.join(', ')}
+                  </span>
+                )}
+              </div>
+            ) : (
+              <span style={{ color: 'var(--accent-red)' }}>Search failed. Please try again.</span>
+            )}
+          </div>
+        )}
+      </Card>
 
       {/* Summary metrics */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
@@ -66,8 +154,8 @@ export default function DataManager() {
         <MetricCard label="Harvest Jobs" value={jobs.length} accent="amber" />
         <MetricCard
           label="Data Status"
-          value={totalRecords > 0 ? 'Active' : 'Empty'}
-          accent={totalRecords > 0 ? 'green' : 'red'}
+          value={totalRecords > 0 ? 'Active' : 'Loading...'}
+          accent={totalRecords > 0 ? 'green' : 'amber'}
         />
       </div>
 
@@ -84,7 +172,7 @@ export default function DataManager() {
           ) : (
             <Play className="w-4 h-4" />
           )}
-          Harvest Priority 1 Jobs
+          Refresh Priority Data
         </button>
         <button
           onClick={() => runAll()}
@@ -93,7 +181,7 @@ export default function DataManager() {
           style={{ borderColor: 'var(--border)', color: 'var(--text-secondary)' }}
         >
           <Database className="w-4 h-4" />
-          Harvest All Jobs
+          Refresh All Data
         </button>
       </div>
 
@@ -142,7 +230,7 @@ export default function DataManager() {
       {/* Harvest jobs */}
       <Card className="mb-6">
         <div className="text-xs font-semibold uppercase tracking-wider mb-3" style={{ color: 'var(--text-muted)' }}>
-          Harvest Jobs
+          Configured Harvest Jobs
         </div>
         <div className="space-y-2">
           {jobs.map((j) => (
@@ -196,7 +284,7 @@ export default function DataManager() {
                 <span style={{ color: 'var(--text-primary)' }}>{r.job_name}</span>
                 <div className="flex items-center gap-3">
                   <span className="tabular-nums" style={{ color: 'var(--text-secondary)' }}>
-                    {r.raw_count} raw → {r.normalized_count} normalized
+                    {r.raw_count} raw &rarr; {r.normalized_count} normalized
                   </span>
                   <span className="text-[10px] px-1.5 py-0.5 rounded" style={{
                     background: r.status === 'SUCCESS' ? 'rgba(34,197,94,0.15)' : 'rgba(239,68,68,0.15)',

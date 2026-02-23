@@ -79,6 +79,13 @@ export const api = {
 
   submitGroundPrice: (price: GroundPriceInput) =>
     post<{ status: string; observation: unknown }>('/data/ground-price', price),
+
+  // Search harvest — type a commodity name and auto-fetch data
+  harvestBySearch: (commodityName: string) =>
+    post<HarvestSearchResult>(`/data/harvest/search?commodity_name=${encodeURIComponent(commodityName)}`, {}),
+
+  // Data loading status — check if initial harvest is done
+  harvestStatus: () => get<HarvestStatus>('/data/harvest/status'),
 };
 
 // ── Types ──────────────────────────────────────────────────────
@@ -342,4 +349,23 @@ export interface GroundPriceInput {
   source_name?: string;
   observation_date: string;
   notes?: string;
+}
+
+export interface HarvestSearchResult {
+  status: string;
+  commodity_query: string;
+  commodities_matched: string[];
+  jobs_executed: number;
+  total_records_loaded: number;
+  results: HarvestResult[];
+  message?: string;
+  available?: string[];
+}
+
+export interface HarvestStatus {
+  total_records: number;
+  commodities_loaded: number;
+  total_commodities: number;
+  loading_complete: boolean;
+  per_commodity: Record<string, { name: string; count: number }>;
 }
