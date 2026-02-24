@@ -130,15 +130,48 @@ export interface DeepDiveParams {
   destination_countries?: string[];
 }
 
+export interface PriceByGrade {
+  grade: string;
+  origin: string;
+  fob_usd_per_mt: number | null;
+  volume_mt: number;
+  shipments: number;
+  price_range: { min: number; max: number } | null;
+}
+
+export interface VolumeMomentum {
+  recent_7d_mt: number;
+  prior_7d_mt: number;
+  recent_7d_shipments: number;
+  prior_7d_shipments: number;
+  change_pct: number | null;
+  signal: string;
+  description: string;
+  recent_period: string;
+  prior_period: string;
+}
+
+export interface EnrichedEntity {
+  entity: string;
+  volume_mt: number;
+  value_usd: number;
+  shipments: number;
+  market_share_pct: number;
+  avg_price_per_mt: number | null;
+  top_grades: { grade: string; count: number }[];
+  top_origins: { country: string; volume_mt: number }[];
+}
+
 export interface DeepDiveResult {
   commodity: { hct_id: string; hct_name: string; hct_group: string };
+  period: { start: string; end: string };
+  price_by_grade: PriceByGrade[];
+  volume_momentum: VolumeMomentum;
+  top_buyers: EnrichedEntity[];
+  top_sellers: EnrichedEntity[];
   current_ipc: IPCResult;
   ipc_series: IPCPoint[];
-  fvi: FVIResult;
   volume_summary: FlowResult;
-  top_buyers: MarketShareResult;
-  top_sellers: MarketShareResult;
-  seasonal_patterns: unknown;
 }
 
 export interface IPCResult {

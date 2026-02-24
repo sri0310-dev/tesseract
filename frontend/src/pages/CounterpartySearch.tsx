@@ -1,4 +1,5 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import {
   XAxis, YAxis, Tooltip, ResponsiveContainer,
   AreaChart, Area, BarChart, Bar,
@@ -15,13 +16,52 @@ const HUNGER_CONFIG: Record<string, { color: string; icon: typeof TrendingUp; la
 };
 
 export default function CounterpartySearch() {
-  const [query, setQuery] = useState('');
+  const [searchParams] = useSearchParams();
+  const [query, setQuery] = useState(searchParams.get('name') || '');
   const [tradeCountry, setTradeCountry] = useState('INDIA');
-  const [tradeType, setTradeType] = useState('IMPORT');
+  const [tradeType, setTradeType] = useState(searchParams.get('trade_type') || 'IMPORT');
   const [months, setMonths] = useState(6);
   const [loading, setLoading] = useState(false);
   const [profile, setProfile] = useState<CounterpartyProfile | null>(null);
   const [error, setError] = useState('');
+
+  // Auto-search if navigated with query params (from commodity detail click-through)
+  useEffect(() => {
+    const name = searchParams.get('name');
+    const type = searchParams.get('trade_type');
+    if (name && name.length >= 2) {
+      setQuery(name);
+      if (type) setTradeType(type);
+      // Trigger search after state updates
+      setTimeout(() => {
+        handleSearchWith(name, type || tradeType);
+      }, 0);
+    }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const handleSearchWith = async (name: string, type: string) => {
+    if (name.trim().length < 2) return;
+    setLoading(true);
+    setError('');
+    setProfile(null);
+    try {
+      const result = await api.counterpartySearch({
+        name: name.trim(),
+        trade_country: tradeCountry,
+        trade_type: type,
+        months,
+      });
+      if (result.status === 'NOT_FOUND') {
+        setError(result.message || `No shipments found for "${name}"`);
+      } else {
+        setProfile(result);
+      }
+    } catch {
+      setError('Search failed. Please try again.');
+    } finally {
+      setLoading(false);
+    }
+  };
 
   const handleSearch = async () => {
     if (query.trim().length < 2) return;

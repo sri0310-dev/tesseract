@@ -144,8 +144,8 @@ async def list_commodities():
 async def commodity_deep_dive(req: CommodityAnalysisRequest):
     """Full analysis for a single commodity.
 
-    Returns IPC time series, volume breakdown, top counterparties,
-    FVI, and S&D signals — everything a trader needs for one commodity.
+    Returns price-by-grade-and-origin, volume momentum, top counterparties
+    with quality/price detail, and S&D context — what a trader actually needs.
     """
     records = get_records(req.hct_id)
 
@@ -156,30 +156,186 @@ async def commodity_deep_dive(req: CommodityAnalysisRequest):
     if req.destination_countries:
         filtered = [r for r in filtered if r.get("destination_country") in req.destination_countries]
 
-    # IPC time series
-    ipc_series = ipc_engine.compute_time_series(filtered, req.start_date, req.end_date)
+    entry = TAXONOMY.get(req.hct_id, {})
+    period_start = req.start_date.isoformat()
+    period_end = req.end_date.isoformat()
 
-    # Current IPC
+    # ── Price by Grade × Origin ──────────────────────────────────
+    # Group records by (quality_grade, origin_country) and compute
+    # volume-weighted avg price for each segment.
+    price_segments: dict[tuple[str, str], dict] = {}
+    for r in filtered:
+        td = r.get("trade_date", "")
+        if td < period_start or td > period_end:
+            continue
+        grade = "Unknown"
+        q = r.get("quality_estimate")
+        if isinstance(q, dict) and q.get("grade"):
+            grade = q["grade"]
+        origin = r.get("origin_country") or "Unknown"
+        key = (grade, origin)
+        if key not in price_segments:
+            price_segments[key] = {
+                "grade": grade,
+                "origin": origin,
+                "total_value": 0.0,
+                "total_mt": 0.0,
+                "shipments": 0,
+                "prices": [],
+            }
+        seg = price_segments[key]
+        qty = r.get("quantity_mt") or 0
+        price = r.get("fob_usd_per_mt")
+        fob_total = r.get("fob_usd_total") or 0
+        seg["total_mt"] += qty
+        seg["total_value"] += fob_total
+        seg["shipments"] += 1
+        if price and r.get("price_status") == "NORMAL":
+            seg["prices"].append(price)
+
+    price_by_grade = []
+    for seg in sorted(price_segments.values(), key=lambda s: s["total_mt"], reverse=True):
+        avg_price = None
+        if seg["total_mt"] > 0 and seg["total_value"] > 0:
+            avg_price = round(seg["total_value"] / seg["total_mt"], 2)
+        elif seg["prices"]:
+            avg_price = round(sum(seg["prices"]) / len(seg["prices"]), 2)
+
+        price_range = None
+        if len(seg["prices"]) >= 2:
+            price_range = {"min": round(min(seg["prices"]), 2), "max": round(max(seg["prices"]), 2)}
+
+        price_by_grade.append({
+            "grade": seg["grade"],
+            "origin": seg["origin"],
+            "fob_usd_per_mt": avg_price,
+            "volume_mt": round(seg["total_mt"], 2),
+            "shipments": seg["shipments"],
+            "price_range": price_range,
+        })
+
+    # ── Volume Momentum (plain language) ─────────────────────────
+    # Compare last 7 days vs prior 7 days. Simple, clear.
+    recent_cutoff = req.end_date - timedelta(days=7)
+    prior_start = req.end_date - timedelta(days=14)
+    vol_recent = 0.0
+    vol_prior = 0.0
+    ship_recent = 0
+    ship_prior = 0
+    for r in filtered:
+        td = r.get("trade_date", "")
+        qty = r.get("quantity_mt") or 0
+        if td > recent_cutoff.isoformat():
+            vol_recent += qty
+            ship_recent += 1
+        elif td > prior_start.isoformat():
+            vol_prior += qty
+            ship_prior += 1
+
+    if vol_prior > 0:
+        momentum_pct = round((vol_recent - vol_prior) / vol_prior * 100, 1)
+    else:
+        momentum_pct = None
+
+    if momentum_pct is not None:
+        if momentum_pct > 20:
+            momentum_signal = "ACCELERATING"
+            momentum_text = f"Shipments surging — up {momentum_pct}% vs prior week"
+        elif momentum_pct > 5:
+            momentum_signal = "PICKING_UP"
+            momentum_text = f"Shipments picking up — {momentum_pct}% above prior week"
+        elif momentum_pct > -5:
+            momentum_signal = "STEADY"
+            momentum_text = "Shipment pace steady week-over-week"
+        elif momentum_pct > -20:
+            momentum_signal = "SLOWING"
+            momentum_text = f"Shipments slowing — down {abs(momentum_pct)}% vs prior week"
+        else:
+            momentum_signal = "DROPPING"
+            momentum_text = f"Shipments dropping — down {abs(momentum_pct)}% vs prior week"
+    else:
+        momentum_signal = "INSUFFICIENT_DATA"
+        momentum_text = "Not enough data to compare week-over-week"
+
+    volume_momentum = {
+        "recent_7d_mt": round(vol_recent, 1),
+        "prior_7d_mt": round(vol_prior, 1),
+        "recent_7d_shipments": ship_recent,
+        "prior_7d_shipments": ship_prior,
+        "change_pct": momentum_pct,
+        "signal": momentum_signal,
+        "description": momentum_text,
+        "recent_period": f"{recent_cutoff.isoformat()} to {period_end}",
+        "prior_period": f"{prior_start.isoformat()} to {recent_cutoff.isoformat()}",
+    }
+
+    # ── Top Buyers with quality + price context ──────────────────
+    def _enrich_counterparties(party_field: str) -> list[dict]:
+        """Build counterparty list with the quality grades and avg price they trade."""
+        party_data: dict[str, dict] = {}
+        for r in filtered:
+            td = r.get("trade_date", "")
+            if td < period_start or td > period_end:
+                continue
+            name = r.get(party_field) or "Unknown"
+            if name not in party_data:
+                party_data[name] = {
+                    "entity": name,
+                    "volume_mt": 0.0,
+                    "value_usd": 0.0,
+                    "shipments": 0,
+                    "grades": {},
+                    "origins": {},
+                    "prices": [],
+                }
+            pd = party_data[name]
+            pd["volume_mt"] += r.get("quantity_mt") or 0
+            pd["value_usd"] += r.get("fob_usd_total") or 0
+            pd["shipments"] += 1
+            price = r.get("fob_usd_per_mt")
+            if price and r.get("price_status") == "NORMAL":
+                pd["prices"].append(price)
+            q = r.get("quality_estimate")
+            if isinstance(q, dict) and q.get("grade"):
+                g = q["grade"]
+                pd["grades"][g] = pd["grades"].get(g, 0) + 1
+            origin = r.get("origin_country")
+            if origin:
+                pd["origins"][origin] = pd["origins"].get(origin, 0) + (r.get("quantity_mt") or 0)
+
+        total_vol = sum(p["volume_mt"] for p in party_data.values())
+        result = []
+        for pd in sorted(party_data.values(), key=lambda x: x["volume_mt"], reverse=True)[:10]:
+            avg_price = None
+            if pd["volume_mt"] > 0 and pd["value_usd"] > 0:
+                avg_price = round(pd["value_usd"] / pd["volume_mt"], 2)
+            elif pd["prices"]:
+                avg_price = round(sum(pd["prices"]) / len(pd["prices"]), 2)
+
+            top_grades = sorted(pd["grades"].items(), key=lambda x: x[1], reverse=True)[:3]
+            top_origins = sorted(pd["origins"].items(), key=lambda x: x[1], reverse=True)[:3]
+
+            result.append({
+                "entity": pd["entity"],
+                "volume_mt": round(pd["volume_mt"], 2),
+                "value_usd": round(pd["value_usd"], 2),
+                "shipments": pd["shipments"],
+                "market_share_pct": round(pd["volume_mt"] / total_vol * 100, 1) if total_vol > 0 else 0,
+                "avg_price_per_mt": avg_price,
+                "top_grades": [{"grade": g, "count": c} for g, c in top_grades],
+                "top_origins": [{"country": o, "volume_mt": round(v, 1)} for o, v in top_origins],
+            })
+        return result
+
+    enriched_buyers = _enrich_counterparties("consignee")
+    enriched_sellers = _enrich_counterparties("consignor")
+
+    # ── IPC time series (price trend) ────────────────────────────
+    ipc_series = ipc_engine.compute_time_series(filtered, req.start_date, req.end_date)
     current_ipc = ipc_engine.compute(filtered, req.end_date)
 
-    # FVI
-    fvi = fvi_engine.compute_seasonally_adjusted(filtered, req.hct_id, req.end_date)
-
-    # Volume breakdown by origin
+    # ── Volume breakdown by origin ───────────────────────────────
     sd = sd_engine.compute_cumulative_flows(filtered, req.start_date, req.end_date)
-
-    # Top buyers and sellers
-    buyers = counterparty_engine.compute_market_shares(
-        filtered, "consignee", req.start_date, req.end_date, top_n=10
-    )
-    sellers = counterparty_engine.compute_market_shares(
-        filtered, "consignor", req.start_date, req.end_date, top_n=10
-    )
-
-    # Seasonal context
-    seasonal = SEASONAL_PATTERNS.get(req.hct_id)
-
-    entry = TAXONOMY.get(req.hct_id, {})
 
     return {
         "commodity": {
@@ -187,14 +343,14 @@ async def commodity_deep_dive(req: CommodityAnalysisRequest):
             "hct_name": entry.get("hct_name", "Unknown"),
             "hct_group": entry.get("hct_group", "Unknown"),
         },
+        "period": {"start": period_start, "end": period_end},
+        "price_by_grade": price_by_grade,
+        "volume_momentum": volume_momentum,
+        "top_buyers": enriched_buyers,
+        "top_sellers": enriched_sellers,
         "current_ipc": current_ipc,
         "ipc_series": ipc_series,
-        "fvi": fvi,
         "volume_summary": sd,
-        "top_buyers": buyers,
-        "top_sellers": sellers,
-        "seasonal_patterns": seasonal,
-        "period": {"start": req.start_date.isoformat(), "end": req.end_date.isoformat()},
     }
 
 
