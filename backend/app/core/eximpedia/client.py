@@ -58,7 +58,13 @@ class EximpediaClient:
 
             records = response.get("data", [])
             if total_expected is None:
-                total_expected = response.get("total_records", 0)
+                # Eximpedia uses 'total_search_records' not 'total_records'
+                total_expected = (
+                    response.get("total_search_records")
+                    or response.get("total_response_records")
+                    or response.get("total_records")
+                    or 0
+                )
 
             all_records.extend(records)
 
@@ -108,6 +114,16 @@ class EximpediaClient:
                             # Token expired mid-flight — refresh and retry
                             self.token_manager.invalidate()
                             token = await self.token_manager.get_token()
+                            continue
+
+                        if response.status_code == 429:
+                            # Rate limited — back off and retry
+                            backoff = 2 ** (attempt + 2)  # 4s, 8s, 16s, 32s
+                            logger.warning(
+                                f"Rate limited on {endpoint} (attempt {attempt + 1}). "
+                                f"Waiting {backoff}s"
+                            )
+                            await asyncio.sleep(backoff)
                             continue
 
                         if response.status_code != 200:
