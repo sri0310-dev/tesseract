@@ -51,10 +51,11 @@ class QueryBuilder:
         }
 
         # Primary search — required
+        # Eximpedia API requires HS code values as strings with leading zeros
         if hs_codes:
             payload["PrimarySearch"] = {
                 "FILTER": "HS_CODE",
-                "VALUES": hs_codes[:5],
+                "VALUES": [str(c).zfill(4) if c < 1000 else str(c) for c in hs_codes][:5],
                 "SearchType": "CONTAIN",
             }
         elif products:
@@ -123,7 +124,7 @@ class QueryBuilder:
         if hs_codes:
             payload["PrimarySearch"] = {
                 "FILTER": "HS_CODE",
-                "VALUES": hs_codes[:5],
+                "VALUES": [str(c).zfill(4) if c < 1000 else str(c) for c in hs_codes][:5],
                 "SearchType": "CONTAIN",
             }
         elif products:
