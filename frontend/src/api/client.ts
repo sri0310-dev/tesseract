@@ -86,6 +86,18 @@ export const api = {
 
   // Data loading status — check if initial harvest is done
   harvestStatus: () => get<HarvestStatus>('/data/harvest/status'),
+
+  // Counterparty search
+  counterpartySearch: (params: CounterpartySearchParams) =>
+    get<CounterpartyProfile>(
+      `/intelligence/counterparty/search?name=${encodeURIComponent(params.name)}`
+      + `&trade_country=${params.trade_country || 'INDIA'}`
+      + `&trade_type=${params.trade_type || 'IMPORT'}`
+      + `&months=${params.months || 6}`
+    ),
+
+  // Budget
+  apiBudget: () => get<BudgetStatus>('/intelligence/budget'),
 };
 
 // ── Types ──────────────────────────────────────────────────────
@@ -369,4 +381,59 @@ export interface HarvestStatus {
   total_commodities: number;
   loading_complete: boolean;
   per_commodity: Record<string, { name: string; count: number }>;
+}
+
+export interface CounterpartySearchParams {
+  name: string;
+  trade_country?: string;
+  trade_type?: string;
+  months?: number;
+}
+
+export interface CounterpartyProfile {
+  status: string;
+  query: string;
+  counterparty_name: string;
+  trade_type: string;
+  trade_country: string;
+  data_source: string;
+  summary: {
+    total_shipments: number;
+    total_volume_mt: number;
+    total_value_usd: number;
+    avg_price_per_mt: number | null;
+    date_range: { earliest: string | null; latest: string | null };
+    hunger_signal: string;
+  };
+  price_series: { date: string; price_usd_per_mt: number }[];
+  volume_series: { month: string; volume_mt: number }[];
+  commodity_breakdown: { hct_id: string; name: string; volume_mt: number; value_usd: number; shipments: number }[];
+  geography_breakdown: { country: string; volume_mt: number; share_pct: number }[];
+  quality_breakdown: { grade: string; count: number }[];
+  market_comparison: { commodity: string; hct_id: string; market_price: number; party_avg_price: number | null }[];
+  recent_shipments: {
+    date: string;
+    commodity: string;
+    origin: string | null;
+    destination: string | null;
+    quantity_mt: number | null;
+    fob_usd_per_mt: number | null;
+    quality: { grade: string; confidence: number } | null;
+    port: string | null;
+  }[];
+  budget: BudgetStatus;
+  message?: string;
+}
+
+export interface BudgetStatus {
+  daily_calls_used: number;
+  daily_calls_limit: number;
+  harvest_calls_used: number;
+  harvest_budget: number;
+  search_calls_used: number;
+  search_budget: number;
+  daily_calls_remaining: number;
+  credits_consumed: number;
+  credits_remaining: number;
+  day: string;
 }

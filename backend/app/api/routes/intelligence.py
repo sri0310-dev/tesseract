@@ -296,3 +296,243 @@ async def arbitrage_scan(hct_id: str):
 
     arbs = corridor_engine.find_arbitrage(records, corridor_dicts)
     return {"commodity": hct_id, "opportunities": arbs}
+
+
+# ── Counterparty Search & Deep Intelligence ───────────────────
+
+@router.get("/counterparty/search")
+async def counterparty_search(
+    name: str = Query(..., min_length=2, description="Company name to search"),
+    trade_country: str = Query(default="INDIA", description="Country to search in"),
+    trade_type: str = Query(default="IMPORT", description="IMPORT or EXPORT"),
+    months: int = Query(default=6, le=12, description="Months of history"),
+):
+    """Search for a counterparty by name and get full intelligence profile.
+
+    Searches cached data first, then optionally fetches from Eximpedia
+    if the counterparty is not found locally.
+    """
+    from app.core.budget import APIBudgetTracker
+
+    name_upper = name.upper().strip()
+    today = date.today()
+    start = today - timedelta(days=months * 30)
+    budget = APIBudgetTracker()
+
+    # Step 1: Search all cached records for this counterparty
+    party_field = "consignee" if trade_type.upper() == "IMPORT" else "consignor"
+    local_records = []
+    for hct_id, records in _record_store.items():
+        for r in records:
+            party = (r.get(party_field) or "").upper()
+            if name_upper in party:
+                local_records.append(r)
+
+    # Step 2: If insufficient local data and budget allows, fetch from API
+    api_fetched = False
+    if len(local_records) < 10 and budget.can_search():
+        try:
+            from app.core.eximpedia import EximpediaClient, EximpediaTokenManager
+            from app.core.normalization import NormalizationPipeline
+
+            client = EximpediaClient(EximpediaTokenManager())
+            normalizer = NormalizationPipeline()
+
+            filter_type = "CONSIGNEE" if trade_type.upper() == "IMPORT" else "CONSIGNOR"
+            payload = {
+                "DateRange": {
+                    "start_date": start.isoformat(),
+                    "end_date": today.isoformat(),
+                },
+                "TradeType": trade_type.upper(),
+                "TradeCountry": trade_country.upper(),
+                "page_size": 1000,
+                "page_no": 1,
+                "sort": "DATE",
+                "sort_type": "desc",
+                "PrimarySearch": {
+                    "FILTER": filter_type,
+                    "VALUES": [name_upper],
+                    "SearchType": "CONTAIN",
+                },
+            }
+
+            try:
+                response = await client.trade_shipment(payload)
+                budget.record_call("search")
+                raw_records = response.get("data", [])
+                for r in raw_records:
+                    try:
+                        n = normalizer.normalize(r, trade_type, trade_country)
+                        local_records.append(n)
+                        if n.get("hct_id"):
+                            store_records(n["hct_id"], [n])
+                    except Exception:
+                        pass
+                api_fetched = True
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    if not local_records:
+        return {
+            "status": "NOT_FOUND",
+            "query": name,
+            "message": f"No shipments found for '{name}' in {trade_country} {trade_type}",
+            "budget": budget.status,
+        }
+
+    # Step 3: Build intelligence profile
+    # Recent shipments (last 20)
+    sorted_records = sorted(
+        local_records, key=lambda r: r.get("trade_date") or "", reverse=True
+    )
+    recent_shipments = sorted_records[:20]
+
+    # Price analysis
+    prices_with_date = [
+        (r["trade_date"], r["fob_usd_per_mt"])
+        for r in sorted_records
+        if r.get("fob_usd_per_mt") and r.get("trade_date")
+    ]
+    avg_price = (
+        sum(p for _, p in prices_with_date) / len(prices_with_date)
+        if prices_with_date
+        else None
+    )
+
+    # Price time series
+    price_series = [
+        {"date": d, "price_usd_per_mt": round(p, 2)}
+        for d, p in prices_with_date
+    ]
+
+    # Volume time series
+    volume_by_month: dict[str, float] = {}
+    for r in sorted_records:
+        d = r.get("trade_date", "")[:7]  # YYYY-MM
+        if d:
+            volume_by_month[d] = volume_by_month.get(d, 0) + (r.get("quantity_mt") or 0)
+    volume_series = [
+        {"month": m, "volume_mt": round(v, 2)}
+        for m, v in sorted(volume_by_month.items())
+    ]
+
+    # Commodity breakdown
+    commodity_volumes: dict[str, dict] = {}
+    for r in sorted_records:
+        cid = r.get("hct_id") or "UNKNOWN"
+        cname = r.get("hct_name") or "Unknown"
+        if cid not in commodity_volumes:
+            commodity_volumes[cid] = {"name": cname, "volume_mt": 0, "value_usd": 0, "shipments": 0}
+        commodity_volumes[cid]["volume_mt"] += r.get("quantity_mt") or 0
+        commodity_volumes[cid]["value_usd"] += r.get("fob_usd_total") or 0
+        commodity_volumes[cid]["shipments"] += 1
+
+    # Origin/destination breakdown
+    geo_volumes: dict[str, float] = {}
+    geo_field = "origin_country" if trade_type.upper() == "IMPORT" else "destination_country"
+    for r in sorted_records:
+        g = r.get(geo_field) or "UNKNOWN"
+        geo_volumes[g] = geo_volumes.get(g, 0) + (r.get("quantity_mt") or 0)
+
+    total_volume = sum(r.get("quantity_mt") or 0 for r in sorted_records)
+    total_value = sum(r.get("fob_usd_total") or 0 for r in sorted_records)
+
+    # Market comparison: how does this party's avg price compare to market?
+    market_prices = []
+    for r in sorted_records:
+        hct_id = r.get("hct_id")
+        if hct_id:
+            mkt_records = get_records(hct_id)
+            if mkt_records:
+                mkt_ipc = ipc_engine.compute(mkt_records)
+                if mkt_ipc.get("price_usd_per_mt"):
+                    market_prices.append({
+                        "commodity": r.get("hct_name"),
+                        "hct_id": hct_id,
+                        "market_price": mkt_ipc["price_usd_per_mt"],
+                        "party_avg_price": avg_price,
+                    })
+                    break  # One comparison is enough for overview
+
+    # Hunger signal: is volume trend increasing or decreasing?
+    hunger_signal = "STABLE"
+    if len(volume_series) >= 3:
+        recent_avg = sum(v["volume_mt"] for v in volume_series[-2:]) / 2
+        older_avg = sum(v["volume_mt"] for v in volume_series[:-2]) / max(1, len(volume_series) - 2)
+        if older_avg > 0:
+            ratio = recent_avg / older_avg
+            if ratio > 1.3:
+                hunger_signal = "INCREASING"
+            elif ratio < 0.7:
+                hunger_signal = "DECREASING"
+
+    # Quality breakdown
+    quality_counts: dict[str, int] = {}
+    for r in sorted_records:
+        q = r.get("quality_estimate", {})
+        if isinstance(q, dict):
+            grade = q.get("grade", "Unknown")
+        else:
+            grade = "Unknown"
+        quality_counts[grade] = quality_counts.get(grade, 0) + 1
+
+    return {
+        "status": "SUCCESS",
+        "query": name,
+        "counterparty_name": sorted_records[0].get(party_field) if sorted_records else name,
+        "trade_type": trade_type.upper(),
+        "trade_country": trade_country,
+        "data_source": "api" if api_fetched else "cache",
+        "summary": {
+            "total_shipments": len(sorted_records),
+            "total_volume_mt": round(total_volume, 2),
+            "total_value_usd": round(total_value, 2),
+            "avg_price_per_mt": round(avg_price, 2) if avg_price else None,
+            "date_range": {
+                "earliest": sorted_records[-1].get("trade_date") if sorted_records else None,
+                "latest": sorted_records[0].get("trade_date") if sorted_records else None,
+            },
+            "hunger_signal": hunger_signal,
+        },
+        "price_series": price_series,
+        "volume_series": volume_series,
+        "commodity_breakdown": [
+            {"hct_id": k, **v} for k, v in sorted(
+                commodity_volumes.items(), key=lambda x: x[1]["volume_mt"], reverse=True
+            )
+        ],
+        "geography_breakdown": [
+            {"country": k, "volume_mt": round(v, 2), "share_pct": round(v / total_volume * 100, 1) if total_volume > 0 else 0}
+            for k, v in sorted(geo_volumes.items(), key=lambda x: x[1], reverse=True)
+        ],
+        "quality_breakdown": [
+            {"grade": k, "count": v} for k, v in sorted(quality_counts.items(), key=lambda x: x[1], reverse=True)
+        ],
+        "market_comparison": market_prices,
+        "recent_shipments": [
+            {
+                "date": r.get("trade_date"),
+                "commodity": r.get("hct_name"),
+                "origin": r.get("origin_country"),
+                "destination": r.get("destination_country"),
+                "quantity_mt": r.get("quantity_mt"),
+                "fob_usd_per_mt": r.get("fob_usd_per_mt"),
+                "quality": r.get("quality_estimate"),
+                "port": r.get("origin_port") or r.get("destination_port"),
+            }
+            for r in recent_shipments
+        ],
+        "budget": budget.status,
+    }
+
+
+# ── Budget Status ─────────────────────────────────────────────
+
+@router.get("/budget")
+async def api_budget():
+    """Get current API budget status."""
+    from app.core.budget import APIBudgetTracker
+    return APIBudgetTracker().status

@@ -4,6 +4,7 @@ import {
   BarChart3,
   GitCompareArrows,
   Users,
+  Search,
   ArrowLeftRight,
   Database,
   TrendingUp,
@@ -15,7 +16,8 @@ const NAV_ITEMS = [
   { to: '/commodities', icon: BarChart3, label: 'Commodities' },
   { to: '/supply-demand', icon: Scale, label: 'S&D Tracker' },
   { to: '/corridors', icon: GitCompareArrows, label: 'Corridors' },
-  { to: '/counterparty', icon: Users, label: 'Counterparty' },
+  { to: '/counterparty-search', icon: Search, label: 'Party Search' },
+  { to: '/counterparty', icon: Users, label: 'Market Shares' },
   { to: '/arbitrage', icon: ArrowLeftRight, label: 'Arb Scanner' },
   { to: '/data', icon: Database, label: 'Data' },
 ];
