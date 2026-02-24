@@ -2,6 +2,12 @@
 
 The backend that transforms raw global trade data into
 actionable commodity intelligence for traders.
+
+Startup strategy (budget-aware):
+- 100 API calls/day limit → harvest only 4 highest-priority India jobs on boot
+- Background task harvests remaining P1 jobs over the next few minutes
+- P2 jobs are deferred to on-demand or scheduled refresh
+- Each job ~1-3 API pages = 1-3 calls. 4 jobs ≈ 8-12 calls on startup.
 """
 
 import asyncio
@@ -24,32 +30,72 @@ logger = logging.getLogger(__name__)
 
 
 async def _initial_harvest():
-    """Harvest priority-1 commodity data on startup so traders see data immediately."""
+    """Smart startup harvest — budget-aware, fast first data.
+
+    Strategy:
+    1. Immediate batch (4 India-based jobs): shows data in ~30s
+    2. Background batch (remaining P1 jobs): fills in over next 2-3 min
+    3. Respects daily budget (60 calls for harvests)
+    """
     from app.core.harvester.engine import HarvestEngine
+    from app.core.budget import APIBudgetTracker
     from app.data.harvest_configs import HARVEST_JOBS
     from app.api.routes.intelligence import store_records
 
-    logger.info("Starting initial data harvest (priority 1 jobs)...")
     engine = HarvestEngine()
+    budget = APIBudgetTracker()
 
-    p1_jobs = [j for j in HARVEST_JOBS if j.get("priority", 99) <= 1]
-    for job in p1_jobs:
+    # Phase 1: India jobs (fastest, most reliable data source)
+    india_p1 = [
+        j for j in HARVEST_JOBS
+        if j.get("priority", 99) <= 1 and j["trade_country"] == "INDIA"
+    ]
+    other_p1 = [
+        j for j in HARVEST_JOBS
+        if j.get("priority", 99) <= 1 and j["trade_country"] != "INDIA"
+    ]
+
+    logger.info(
+        f"Startup harvest: {len(india_p1)} India jobs (immediate), "
+        f"{len(other_p1)} other P1 jobs (background)"
+    )
+
+    async def _run_job(job: dict):
+        if not budget.can_harvest():
+            logger.warning(f"  Skipping {job['name']}: daily harvest budget exhausted")
+            return
         try:
             result = await engine.run_job(job)
+            budget.record_call("harvest")
             if result["status"] == "SUCCESS":
                 for record in result.get("normalized_records", []):
                     hct_id = record.get("hct_id")
                     if hct_id:
                         store_records(hct_id, [record])
                 logger.info(
-                    f"  {result['job_name']}: {result['normalized_count']} records loaded"
+                    f"  {result['job_name']}: {result['normalized_count']} records"
                 )
             else:
-                logger.warning(f"  {result['job_name']}: {result.get('error', 'unknown error')}")
+                logger.warning(
+                    f"  {result['job_name']}: {result.get('error', 'unknown')}"
+                )
         except Exception as e:
             logger.warning(f"  {job['name']}: failed ({e})")
 
-    logger.info("Initial harvest complete.")
+    # Phase 1: Immediate (India data)
+    for job in india_p1:
+        await _run_job(job)
+
+    logger.info(
+        f"Phase 1 complete. Budget: {budget.status['daily_calls_remaining']} calls remaining"
+    )
+
+    # Phase 2: Background (other P1 jobs — with small delay between to avoid 429)
+    for job in other_p1:
+        await asyncio.sleep(2)
+        await _run_job(job)
+
+    logger.info(f"Startup harvest complete. Budget: {budget.status}")
 
 
 @asynccontextmanager

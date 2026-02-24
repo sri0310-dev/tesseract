@@ -12,7 +12,7 @@ HARVEST_JOBS: list[dict] = [
         "trade_country": "INDIA",
         "hs_codes": [801],
         "origin_countries": [
-            "IVORY COAST", "GHANA", "NIGERIA",
+            "IVORY_COAST", "GHANA", "NIGERIA",
             "TANZANIA", "MOZAMBIQUE", "GUINEA BISSAU", "BENIN",
         ],
         "schedule": "daily",
@@ -31,7 +31,7 @@ HARVEST_JOBS: list[dict] = [
     {
         "name": "cashew_ivorycoast_export",
         "trade_type": "EXPORT",
-        "trade_country": "IVORY COAST",
+        "trade_country": "IVORY_COAST",
         "hs_codes": [801],
         "schedule": "daily",
         "lookback_days": 30,

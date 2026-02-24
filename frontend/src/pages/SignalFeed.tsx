@@ -1,8 +1,8 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState } from 'react';
 import { api } from '../api/client';
-import type { Signal, HarvestStatus } from '../api/client';
+import type { Signal } from '../api/client';
 import { Card, SeverityBadge, PageHeader } from '../components/Cards';
-import { AlertTriangle, TrendingDown, TrendingUp, UserPlus, Zap, RefreshCw } from 'lucide-react';
+import { AlertTriangle, TrendingDown, TrendingUp, UserPlus, Zap } from 'lucide-react';
 
 const SIGNAL_ICONS: Record<string, typeof Zap> = {
   FLOW_VELOCITY: Zap,
@@ -16,100 +16,34 @@ const SIGNAL_ICONS: Record<string, typeof Zap> = {
 export default function SignalFeed() {
   const [signals, setSignals] = useState<Signal[]>([]);
   const [loading, setLoading] = useState(true);
-  const [status, setStatus] = useState<HarvestStatus | null>(null);
-  const [polling, setPolling] = useState(true);
+  const [recordCount, setRecordCount] = useState(0);
+  const [commodityCount, setCommodityCount] = useState(0);
 
-  const fetchSignals = useCallback(() => {
-    api.getSignals(50)
-      .then((data) => setSignals(data.signals))
-      .catch(() => {});
-  }, []);
-
-  // Poll harvest status until data arrives
   useEffect(() => {
-    if (!polling) return;
-
-    const check = async () => {
-      try {
-        const s = await api.harvestStatus();
-        setStatus(s);
-        if (s.loading_complete) {
-          setPolling(false);
-          fetchSignals();
-          setLoading(false);
-        }
-      } catch {
-        // Backend not ready yet, keep polling
+    // Fetch signals immediately — no loading bar, just show what we have
+    Promise.all([
+      api.getSignals(50).catch(() => ({ signals: [], total: 0 })),
+      api.harvestStatus().catch(() => null),
+    ]).then(([sigData, status]) => {
+      setSignals(sigData.signals);
+      if (status) {
+        setRecordCount(status.total_records);
+        setCommodityCount(status.commodities_loaded);
       }
-    };
+      setLoading(false);
+    });
 
-    check();
-    const interval = setInterval(check, 3000);
+    // Poll for updates every 15s (data arrives in background)
+    const interval = setInterval(() => {
+      api.getSignals(50)
+        .then((d) => setSignals(d.signals))
+        .catch(() => {});
+      api.harvestStatus()
+        .then((s) => { setRecordCount(s.total_records); setCommodityCount(s.commodities_loaded); })
+        .catch(() => {});
+    }, 15000);
     return () => clearInterval(interval);
-  }, [polling, fetchSignals]);
-
-  // Also fetch signals on mount (in case data is already loaded)
-  useEffect(() => {
-    api.getSignals(50)
-      .then((data) => {
-        setSignals(data.signals);
-        setLoading(false);
-        if (data.signals.length > 0) setPolling(false);
-      })
-      .catch(() => {});
   }, []);
-
-  if (loading && !status?.loading_complete) {
-    return (
-      <div className="p-6 max-w-4xl">
-        <PageHeader
-          title="Trading Signals"
-          subtitle="Anomalies, flow changes, and price movements across all monitored corridors"
-        />
-        <Card>
-          <div className="flex items-center gap-3 mb-4">
-            <RefreshCw className="w-5 h-5 animate-spin" style={{ color: 'var(--accent-cyan)' }} />
-            <div>
-              <div className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>
-                Loading commodity data from Eximpedia...
-              </div>
-              <div className="text-xs mt-0.5" style={{ color: 'var(--text-muted)' }}>
-                First load pulls trade data for all priority commodities. This takes a moment.
-              </div>
-            </div>
-          </div>
-          {status && (
-            <div className="space-y-2">
-              <div className="flex items-center justify-between text-xs" style={{ color: 'var(--text-secondary)' }}>
-                <span>{status.total_records.toLocaleString()} records loaded</span>
-                <span>{status.commodities_loaded}/{status.total_commodities} commodities</span>
-              </div>
-              <div className="w-full h-1.5 rounded-full overflow-hidden" style={{ background: 'var(--bg-secondary)' }}>
-                <div
-                  className="h-full rounded-full transition-all duration-500"
-                  style={{
-                    width: `${Math.max(5, (status.commodities_loaded / Math.max(status.total_commodities, 1)) * 100)}%`,
-                    background: 'var(--accent-cyan)',
-                  }}
-                />
-              </div>
-              {Object.entries(status.per_commodity).length > 0 && (
-                <div className="flex flex-wrap gap-2 mt-2">
-                  {Object.entries(status.per_commodity).map(([, info]) => (
-                    <span key={info.name} className="text-[10px] px-2 py-0.5 rounded" style={{
-                      background: 'rgba(6,182,212,0.1)', color: 'var(--accent-cyan)',
-                    }}>
-                      {info.name}: {info.count}
-                    </span>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
-        </Card>
-      </div>
-    );
-  }
 
   return (
     <div className="p-6 max-w-4xl">
@@ -118,16 +52,25 @@ export default function SignalFeed() {
         subtitle="Anomalies, flow changes, and price movements across all monitored corridors"
       />
 
-      {signals.length === 0 ? (
+      {loading ? (
+        <Card>
+          <div className="text-center py-10">
+            <div className="w-6 h-6 border-2 border-cyan-400 border-t-transparent rounded-full animate-spin mx-auto mb-3" />
+            <div className="text-sm" style={{ color: 'var(--text-secondary)' }}>
+              Connecting to intelligence engine...
+            </div>
+          </div>
+        </Card>
+      ) : signals.length === 0 ? (
         <Card>
           <div className="text-center py-10">
             <div className="text-sm" style={{ color: 'var(--text-secondary)' }}>
               No active signals detected. Markets are quiet across all monitored corridors.
             </div>
             <div className="text-xs mt-2" style={{ color: 'var(--text-muted)' }}>
-              {status?.total_records
-                ? `${status.total_records.toLocaleString()} records analyzed across ${status.commodities_loaded} commodities`
-                : 'Signals will appear when price movements, flow changes, or counterparty anomalies are detected'}
+              {recordCount > 0
+                ? `${recordCount.toLocaleString()} records analyzed across ${commodityCount} commodities`
+                : 'Trade data is loading in the background. Signals will appear as analysis completes.'}
             </div>
           </div>
         </Card>
