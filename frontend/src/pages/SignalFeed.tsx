@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { api } from '../api/client';
 import type { Signal } from '../api/client';
 import { Card, SeverityBadge, PageHeader } from '../components/Cards';
-import { AlertTriangle, TrendingDown, TrendingUp, UserPlus, Zap } from 'lucide-react';
+import { AlertTriangle, TrendingDown, TrendingUp, UserPlus, Zap, WifiOff } from 'lucide-react';
 
 const SIGNAL_ICONS: Record<string, typeof Zap> = {
   FLOW_VELOCITY: Zap,
@@ -13,22 +13,29 @@ const SIGNAL_ICONS: Record<string, typeof Zap> = {
   COUNTERPARTY_VOLUME_SURGE: TrendingUp,
 };
 
+const API_BASE = import.meta.env.VITE_API_URL || '';
+
 export default function SignalFeed() {
   const [signals, setSignals] = useState<Signal[]>([]);
   const [loading, setLoading] = useState(true);
   const [recordCount, setRecordCount] = useState(0);
   const [commodityCount, setCommodityCount] = useState(0);
+  const [backendError, setBackendError] = useState('');
 
   useEffect(() => {
     // Fetch signals immediately — no loading bar, just show what we have
     Promise.all([
-      api.getSignals(50).catch(() => ({ signals: [], total: 0 })),
+      api.getSignals(50).catch((e) => {
+        setBackendError(`Cannot reach backend: ${e.message}. API URL: ${API_BASE || '(not set)'}`);
+        return { signals: [], total: 0 };
+      }),
       api.harvestStatus().catch(() => null),
     ]).then(([sigData, status]) => {
       setSignals(sigData.signals);
       if (status) {
         setRecordCount(status.total_records);
         setCommodityCount(status.commodities_loaded);
+        setBackendError(''); // Connected successfully
       }
       setLoading(false);
     });
@@ -36,10 +43,10 @@ export default function SignalFeed() {
     // Poll for updates every 15s (data arrives in background)
     const interval = setInterval(() => {
       api.getSignals(50)
-        .then((d) => setSignals(d.signals))
+        .then((d) => { setSignals(d.signals); setBackendError(''); })
         .catch(() => {});
       api.harvestStatus()
-        .then((s) => { setRecordCount(s.total_records); setCommodityCount(s.commodities_loaded); })
+        .then((s) => { setRecordCount(s.total_records); setCommodityCount(s.commodities_loaded); setBackendError(''); })
         .catch(() => {});
     }, 15000);
     return () => clearInterval(interval);
@@ -51,6 +58,26 @@ export default function SignalFeed() {
         title="Trading Signals"
         subtitle="Anomalies, flow changes, and price movements across all monitored corridors"
       />
+
+      {backendError && (
+        <Card className="mb-4">
+          <div className="flex items-start gap-3 py-2">
+            <WifiOff className="w-5 h-5 flex-shrink-0 mt-0.5" style={{ color: 'var(--accent-red)' }} />
+            <div>
+              <div className="text-sm font-medium" style={{ color: 'var(--accent-red)' }}>
+                Backend Connection Failed
+              </div>
+              <div className="text-xs mt-1" style={{ color: 'var(--text-secondary)' }}>
+                {backendError}
+              </div>
+              <div className="text-xs mt-2" style={{ color: 'var(--text-muted)' }}>
+                Check that VITE_API_URL is set to your Railway URL (e.g. https://your-app.up.railway.app)
+                in Vercel environment variables, and that the backend is running on Railway.
+              </div>
+            </div>
+          </div>
+        </Card>
+      )}
 
       {loading ? (
         <Card>

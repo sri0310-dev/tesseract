@@ -23,7 +23,7 @@ _ground_prices: list[dict] = []
 
 # Top countries for ad-hoc searches
 _SEARCH_COUNTRIES = [
-    "INDIA", "VIETNAM", "IVORY COAST", "GHANA", "NIGERIA",
+    "INDIA", "VIETNAM", "IVORY_COAST", "GHANA", "NIGERIA",
     "TANZANIA", "ETHIOPIA", "INDONESIA", "MALAYSIA", "THAILAND",
     "CHINA", "BRAZIL", "MOZAMBIQUE",
 ]
