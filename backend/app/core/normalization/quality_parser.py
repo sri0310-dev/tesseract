@@ -40,8 +40,11 @@ def parse_quality(product_text: str | None, hct_id: str | None = None) -> dict:
 
 def _parse_cashew(text: str) -> dict:
     signals = []
-    grade = "Standard"
+    grade_parts = []
     details_parts = []
+    outturn_lbs = None
+    nut_count = None
+    origin_claim = None
 
     # State detection
     state = "raw_in_shell"
@@ -51,37 +54,75 @@ def _parse_cashew(text: str) -> dict:
         state = "shelled"
     details_parts.append(f"state={state}")
 
-    # Outturn (KOR) — critical quality indicator
-    outturn_match = re.search(r'OUTTURN\s*[:\-]?\s*(\d+\.?\d*)\s*(?:LBS|#)?', text)
+    # Outturn (KOR) — the trader's key quality indicator
+    # Match patterns: "OUTTURN: 48 LBS", "OUTTURN 48", "KOR 48", "O/T 48",
+    # "48 LBS", "48LBS OUTTURN", "48#"
+    outturn_match = (
+        re.search(r'(?:OUTTURN|KOR|O/?T)\s*[:\-]?\s*(\d+\.?\d*)\s*(?:LBS|#)?', text)
+        or re.search(r'(\d{2})\s*(?:LBS|POUNDS)\b', text)
+    )
     if outturn_match:
-        outturn = float(outturn_match.group(1))
-        signals.append("outturn_detected")
-        details_parts.append(f"outturn={outturn} lbs")
-        if outturn >= 48:
-            grade = "Premium"
-        elif outturn >= 44:
-            grade = "Grade A"
+        outturn_lbs = float(outturn_match.group(1))
+        # Only accept reasonable RCN outturn range (35-60 lbs)
+        if 35 <= outturn_lbs <= 60:
+            signals.append("outturn_detected")
+            details_parts.append(f"outturn={outturn_lbs} lbs")
+            grade_parts.append(f"{int(outturn_lbs)} lbs")
         else:
-            grade = "Grade B"
+            outturn_lbs = None
 
     # Nut count per kg
-    nut_count_match = re.search(r'(\d+)\s*(?:NUTS?|NUT)\s*/?\s*KG', text)
+    nut_count_match = re.search(r'(\d+)\s*(?:NUTS?|NUT|COUNT)\s*/?\s*(?:KG|K\.G)', text)
     if nut_count_match:
-        count = int(nut_count_match.group(1))
-        signals.append("nut_count_detected")
-        details_parts.append(f"nut_count={count}/kg")
+        nut_count = int(nut_count_match.group(1))
+        # Reasonable nut count range (100-250/kg)
+        if 100 <= nut_count <= 300:
+            signals.append("nut_count_detected")
+            details_parts.append(f"nut_count={nut_count}/kg")
+            grade_parts.append(f"{nut_count} ct/kg")
+        else:
+            nut_count = None
 
-    # Origin claims
-    for origin in ["IVORY COAST", "GHANA", "NIGERIA", "TANZANIA", "MOZAMBIQUE",
-                    "GUINEA BISSAU", "BENIN", "COTE D'IVOIRE"]:
-        if origin in text:
+    # Origin claims in product description
+    origin_map = {
+        "IVORY COAST": "IVORY COAST",
+        "COTE D'IVOIRE": "IVORY COAST",
+        "IVC": "IVORY COAST",
+        "GHANA": "GHANA",
+        "NIGERIA": "NIGERIA",
+        "TANZANIA": "TANZANIA",
+        "MOZAMBIQUE": "MOZAMBIQUE",
+        "GUINEA BISSAU": "GUINEA BISSAU",
+        "BENIN": "BENIN",
+        "SENEGAL": "SENEGAL",
+        "TOGO": "TOGO",
+    }
+    for pattern, canonical in origin_map.items():
+        if pattern in text:
+            origin_claim = canonical
             signals.append("origin_claim")
-            details_parts.append(f"origin={origin}")
+            details_parts.append(f"origin={canonical}")
             break
 
+    # Build a trader-readable grade string
+    # e.g. "RCN 48 lbs" or "RCN 52 lbs 180 ct/kg" or "RCN (Unknown outturn)"
+    if grade_parts:
+        grade = "RCN " + " / ".join(grade_parts)
+    elif state == "raw_in_shell":
+        grade = "RCN (outturn unknown)"
+    else:
+        grade = state.replace("_", " ").title()
+
     conf = min(0.3 + len(signals) * 0.2, 0.95)
-    return {"grade": grade, "confidence": conf, "signals_used": signals,
-            "details": "; ".join(details_parts)}
+    return {
+        "grade": grade,
+        "confidence": conf,
+        "signals_used": signals,
+        "details": "; ".join(details_parts),
+        "outturn_lbs": outturn_lbs,
+        "nut_count": nut_count,
+        "origin_claim": origin_claim,
+    }
 
 
 def _parse_cashew_kernel(text: str) -> dict:

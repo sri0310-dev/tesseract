@@ -354,6 +354,244 @@ async def commodity_deep_dive(req: CommodityAnalysisRequest):
     }
 
 
+# ── Arrivals Cockpit (RCN Trader View) ───────────────────────────
+
+@router.post("/commodity/arrivals")
+async def commodity_arrivals(req: CommodityAnalysisRequest):
+    """Trader's cockpit: arrivals by origin x outturn x port, origin momentum,
+    port-level volumes, and top importers with quality context.
+
+    Answers:
+    1. How much Ghana 52 arrived in Tuticorin last week?
+    2. How much did counterparty X import last 4 weeks?
+    3. Is Ghana momentum picking up? Tanzania?
+    4. Full RCN arrivals summary by origin, outturn, nut count.
+    """
+    records = get_records(req.hct_id)
+    entry = TAXONOMY.get(req.hct_id, {})
+    today = req.end_date
+    period_end = today.isoformat()
+
+    # Time buckets
+    cutoff_7d = (today - timedelta(days=7)).isoformat()
+    cutoff_14d = (today - timedelta(days=14)).isoformat()
+    cutoff_30d = (today - timedelta(days=30)).isoformat()
+
+    # ── 1. Arrivals Summary: Origin x Outturn x Nut Count ────────
+    arrivals: dict[tuple[str, str, str], dict] = {}
+    for r in records:
+        td = r.get("trade_date", "")
+        if td < cutoff_30d or td > period_end:
+            continue
+
+        origin = r.get("origin_country") or "Unknown"
+        q = r.get("quality_estimate") or {}
+        outturn = q.get("outturn_lbs")
+        nut_ct = q.get("nut_count")
+
+        outturn_str = f"{int(outturn)} lbs" if outturn else "Unknown"
+        nut_ct_str = f"{nut_ct}/kg" if nut_ct else "—"
+
+        key = (origin, outturn_str, nut_ct_str)
+        if key not in arrivals:
+            arrivals[key] = {
+                "origin": origin,
+                "outturn": outturn_str,
+                "outturn_lbs": outturn,
+                "nut_count": nut_ct_str,
+                "vol_7d": 0.0, "vol_14d": 0.0, "vol_30d": 0.0,
+                "ship_7d": 0, "ship_14d": 0, "ship_30d": 0,
+                "total_value_30d": 0.0,
+                "prices": [],
+            }
+
+        a = arrivals[key]
+        qty = r.get("quantity_mt") or 0
+        fob_total = r.get("fob_usd_total") or 0
+        price = r.get("fob_usd_per_mt")
+
+        a["vol_30d"] += qty
+        a["ship_30d"] += 1
+        a["total_value_30d"] += fob_total
+        if price and r.get("price_status") == "NORMAL":
+            a["prices"].append(price)
+        if td > cutoff_14d:
+            a["vol_14d"] += qty
+            a["ship_14d"] += 1
+        if td > cutoff_7d:
+            a["vol_7d"] += qty
+            a["ship_7d"] += 1
+
+    arrivals_summary = []
+    for a in sorted(arrivals.values(), key=lambda x: x["vol_30d"], reverse=True):
+        avg_price = None
+        if a["vol_30d"] > 0 and a["total_value_30d"] > 0:
+            avg_price = round(a["total_value_30d"] / a["vol_30d"], 2)
+        elif a["prices"]:
+            avg_price = round(sum(a["prices"]) / len(a["prices"]), 2)
+
+        arrivals_summary.append({
+            "origin": a["origin"],
+            "outturn": a["outturn"],
+            "outturn_lbs": a["outturn_lbs"],
+            "nut_count": a["nut_count"],
+            "last_7d_mt": round(a["vol_7d"], 1),
+            "last_14d_mt": round(a["vol_14d"], 1),
+            "last_30d_mt": round(a["vol_30d"], 1),
+            "shipments_30d": a["ship_30d"],
+            "avg_fob_usd_per_mt": avg_price,
+        })
+
+    # ── 2. Origin Momentum (per-origin week-over-week) ────────────
+    origin_vols: dict[str, dict] = {}
+    for r in records:
+        td = r.get("trade_date", "")
+        if td < cutoff_14d or td > period_end:
+            continue
+        origin = r.get("origin_country") or "Unknown"
+        if origin not in origin_vols:
+            origin_vols[origin] = {
+                "recent_7d": 0.0, "prior_7d": 0.0,
+                "recent_ships": 0, "prior_ships": 0,
+            }
+        qty = r.get("quantity_mt") or 0
+        if td > cutoff_7d:
+            origin_vols[origin]["recent_7d"] += qty
+            origin_vols[origin]["recent_ships"] += 1
+        else:
+            origin_vols[origin]["prior_7d"] += qty
+            origin_vols[origin]["prior_ships"] += 1
+
+    origin_momentum = []
+    for origin, v in sorted(origin_vols.items(), key=lambda x: x[1]["recent_7d"], reverse=True):
+        change = None
+        if v["prior_7d"] > 0:
+            change = round((v["recent_7d"] - v["prior_7d"]) / v["prior_7d"] * 100, 1)
+
+        if change is not None:
+            if change > 20:
+                signal = "SURGING"
+            elif change > 5:
+                signal = "PICKING_UP"
+            elif change > -5:
+                signal = "STEADY"
+            elif change > -20:
+                signal = "SLOWING"
+            else:
+                signal = "DROPPING"
+        else:
+            signal = "NEW" if v["recent_7d"] > 0 else "NO_DATA"
+
+        origin_momentum.append({
+            "origin": origin,
+            "last_7d_mt": round(v["recent_7d"], 1),
+            "prior_7d_mt": round(v["prior_7d"], 1),
+            "last_7d_shipments": v["recent_ships"],
+            "change_pct": change,
+            "signal": signal,
+        })
+
+    # ── 3. Port Arrivals ──────────────────────────────────────────
+    port_data: dict[str, dict] = {}
+    for r in records:
+        td = r.get("trade_date", "")
+        if td < cutoff_30d or td > period_end:
+            continue
+        port = r.get("destination_port") or r.get("origin_port") or "Unknown"
+        if port not in port_data:
+            port_data[port] = {
+                "vol_7d": 0.0, "vol_14d": 0.0, "vol_30d": 0.0,
+                "ship_30d": 0,
+                "origins": {},
+            }
+        qty = r.get("quantity_mt") or 0
+        pd = port_data[port]
+        pd["vol_30d"] += qty
+        pd["ship_30d"] += 1
+        if td > cutoff_14d:
+            pd["vol_14d"] += qty
+        if td > cutoff_7d:
+            pd["vol_7d"] += qty
+        origin = r.get("origin_country") or "Unknown"
+        pd["origins"][origin] = pd["origins"].get(origin, 0) + qty
+
+    port_arrivals = []
+    for port, pd in sorted(port_data.items(), key=lambda x: x[1]["vol_30d"], reverse=True):
+        top_origins = sorted(pd["origins"].items(), key=lambda x: x[1], reverse=True)[:3]
+        port_arrivals.append({
+            "port": port,
+            "last_7d_mt": round(pd["vol_7d"], 1),
+            "last_14d_mt": round(pd["vol_14d"], 1),
+            "last_30d_mt": round(pd["vol_30d"], 1),
+            "shipments_30d": pd["ship_30d"],
+            "top_origins": [o[0] for o in top_origins],
+        })
+
+    # ── 4. Top Importers (last 4 weeks) ───────────────────────────
+    importer_data: dict[str, dict] = {}
+    for r in records:
+        td = r.get("trade_date", "")
+        if td < cutoff_30d or td > period_end:
+            continue
+        name = r.get("consignee") or "Unknown"
+        if name not in importer_data:
+            importer_data[name] = {
+                "volume_mt": 0.0, "value_usd": 0.0, "shipments": 0,
+                "outturns": {}, "origins": {}, "ports": {},
+            }
+        imp = importer_data[name]
+        qty = r.get("quantity_mt") or 0
+        imp["volume_mt"] += qty
+        imp["value_usd"] += r.get("fob_usd_total") or 0
+        imp["shipments"] += 1
+
+        q = r.get("quality_estimate") or {}
+        ot = q.get("outturn_lbs")
+        if ot:
+            k = f"{int(ot)} lbs"
+            imp["outturns"][k] = imp["outturns"].get(k, 0) + qty
+        origin = r.get("origin_country")
+        if origin:
+            imp["origins"][origin] = imp["origins"].get(origin, 0) + qty
+        port = r.get("destination_port") or r.get("origin_port")
+        if port:
+            imp["ports"][port] = imp["ports"].get(port, 0) + qty
+
+    top_importers = []
+    total_vol = sum(i["volume_mt"] for i in importer_data.values())
+    for name, imp in sorted(importer_data.items(), key=lambda x: x[1]["volume_mt"], reverse=True)[:15]:
+        avg_price = None
+        if imp["volume_mt"] > 0 and imp["value_usd"] > 0:
+            avg_price = round(imp["value_usd"] / imp["volume_mt"], 2)
+        top_outturns = sorted(imp["outturns"].items(), key=lambda x: x[1], reverse=True)[:3]
+        top_origins = sorted(imp["origins"].items(), key=lambda x: x[1], reverse=True)[:3]
+        top_ports = sorted(imp["ports"].items(), key=lambda x: x[1], reverse=True)[:2]
+
+        top_importers.append({
+            "entity": name,
+            "volume_mt": round(imp["volume_mt"], 1),
+            "value_usd": round(imp["value_usd"], 2),
+            "shipments": imp["shipments"],
+            "market_share_pct": round(imp["volume_mt"] / total_vol * 100, 1) if total_vol > 0 else 0,
+            "avg_price_per_mt": avg_price,
+            "top_outturns": [{"outturn": o, "volume_mt": round(v, 1)} for o, v in top_outturns],
+            "top_origins": [{"country": o, "volume_mt": round(v, 1)} for o, v in top_origins],
+            "top_ports": [p[0] for p in top_ports],
+        })
+
+    return {
+        "commodity": {
+            "hct_id": req.hct_id,
+            "hct_name": entry.get("hct_name", "Unknown"),
+        },
+        "as_of": period_end,
+        "arrivals_summary": arrivals_summary,
+        "origin_momentum": origin_momentum,
+        "port_arrivals": port_arrivals,
+        "top_importers": top_importers,
+    }
+
+
 # ── Corridor Explorer ────────────────────────────────────────────
 
 @router.get("/corridors")
