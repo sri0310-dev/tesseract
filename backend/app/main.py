@@ -12,6 +12,8 @@ Startup strategy (budget-aware):
 
 import asyncio
 import logging
+import os
+import traceback
 
 from contextlib import asynccontextmanager
 
@@ -37,69 +39,77 @@ async def _initial_harvest():
     2. Background batch (remaining P1 jobs): fills in over next 2-3 min
     3. Respects daily budget (60 calls for harvests)
     """
-    from app.core.harvester.engine import HarvestEngine
-    from app.core.budget import APIBudgetTracker
-    from app.data.harvest_configs import HARVEST_JOBS
-    from app.api.routes.intelligence import store_records
+    try:
+        from app.core.harvester.engine import HarvestEngine
+        from app.core.budget import APIBudgetTracker
+        from app.data.harvest_configs import HARVEST_JOBS
+        from app.api.routes.intelligence import store_records
 
-    engine = HarvestEngine()
-    budget = APIBudgetTracker()
+        engine = HarvestEngine()
+        budget = APIBudgetTracker()
 
-    # Phase 1: India jobs (fastest, most reliable data source)
-    india_p1 = [
-        j for j in HARVEST_JOBS
-        if j.get("priority", 99) <= 1 and j["trade_country"] == "INDIA"
-    ]
-    other_p1 = [
-        j for j in HARVEST_JOBS
-        if j.get("priority", 99) <= 1 and j["trade_country"] != "INDIA"
-    ]
+        # Phase 1: India jobs (fastest, most reliable data source)
+        india_p1 = [
+            j for j in HARVEST_JOBS
+            if j.get("priority", 99) <= 1 and j["trade_country"] == "INDIA"
+        ]
+        other_p1 = [
+            j for j in HARVEST_JOBS
+            if j.get("priority", 99) <= 1 and j["trade_country"] != "INDIA"
+        ]
 
-    logger.info(
-        f"Startup harvest: {len(india_p1)} India jobs (immediate), "
-        f"{len(other_p1)} other P1 jobs (background)"
-    )
+        logger.info(
+            f"Startup harvest: {len(india_p1)} India jobs (immediate), "
+            f"{len(other_p1)} other P1 jobs (background)"
+        )
 
-    async def _run_job(job: dict):
-        if not budget.can_harvest():
-            logger.warning(f"  Skipping {job['name']}: daily harvest budget exhausted")
-            return
-        try:
-            result = await engine.run_job(job)
-            budget.record_call("harvest")
-            if result["status"] == "SUCCESS":
-                for record in result.get("normalized_records", []):
-                    hct_id = record.get("hct_id")
-                    if hct_id:
-                        store_records(hct_id, [record])
-                logger.info(
-                    f"  {result['job_name']}: {result['normalized_count']} records"
-                )
-            else:
-                logger.warning(
-                    f"  {result['job_name']}: {result.get('error', 'unknown')}"
-                )
-        except Exception as e:
-            logger.warning(f"  {job['name']}: failed ({e})")
+        async def _run_job(job: dict):
+            if not budget.can_harvest():
+                logger.warning(f"  Skipping {job['name']}: daily harvest budget exhausted")
+                return
+            try:
+                result = await engine.run_job(job)
+                budget.record_call("harvest")
+                if result["status"] == "SUCCESS":
+                    for record in result.get("normalized_records", []):
+                        hct_id = record.get("hct_id")
+                        if hct_id:
+                            store_records(hct_id, [record])
+                    logger.info(
+                        f"  {result['job_name']}: {result['normalized_count']} records"
+                    )
+                else:
+                    logger.warning(
+                        f"  {result['job_name']}: {result.get('error', 'unknown')}"
+                    )
+            except Exception as e:
+                logger.warning(f"  {job['name']}: failed ({e})")
 
-    # Phase 1: Immediate (India data)
-    for job in india_p1:
-        await _run_job(job)
+        # Phase 1: Immediate (India data)
+        for job in india_p1:
+            await _run_job(job)
 
-    logger.info(
-        f"Phase 1 complete. Budget: {budget.status['daily_calls_remaining']} calls remaining"
-    )
+        logger.info(
+            f"Phase 1 complete. Budget: {budget.status['daily_calls_remaining']} calls remaining"
+        )
 
-    # Phase 2: Background (other P1 jobs — with small delay between to avoid 429)
-    for job in other_p1:
-        await asyncio.sleep(2)
-        await _run_job(job)
+        # Phase 2: Background (other P1 jobs — with small delay between to avoid 429)
+        for job in other_p1:
+            await asyncio.sleep(2)
+            await _run_job(job)
 
-    logger.info(f"Startup harvest complete. Budget: {budget.status}")
+        logger.info(f"Startup harvest complete. Budget: {budget.status}")
+
+    except Exception as e:
+        logger.error(f"Startup harvest crashed (server still running): {e}")
+        logger.error(traceback.format_exc())
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    logger.info(f"Server starting on PORT={os.environ.get('PORT', 'not set')}")
+    logger.info(f"EXIMPEDIA_CLIENT_ID configured: {bool(settings.EXIMPEDIA_CLIENT_ID)}")
+    logger.info(f"EXIMPEDIA_CLIENT_SECRET configured: {bool(settings.EXIMPEDIA_CLIENT_SECRET)}")
     # Fire-and-forget: harvest data in background so the server starts immediately
     asyncio.create_task(_initial_harvest())
     yield
@@ -134,9 +144,47 @@ async def root():
         "name": settings.APP_NAME,
         "version": settings.APP_VERSION,
         "status": "operational",
+        "port": os.environ.get("PORT", "default"),
     }
 
 
 @app.get("/health")
 async def health():
     return {"status": "healthy"}
+
+
+@app.get("/debug")
+async def debug_info():
+    """Diagnostic endpoint — shows config, data status, and API connectivity."""
+    from app.api.routes.intelligence import _record_store
+
+    env_info = {
+        "PORT": os.environ.get("PORT", "not set"),
+        "EXIMPEDIA_CLIENT_ID_set": bool(settings.EXIMPEDIA_CLIENT_ID),
+        "EXIMPEDIA_CLIENT_SECRET_set": bool(settings.EXIMPEDIA_CLIENT_SECRET),
+        "EXIMPEDIA_BASE_URL": settings.EXIMPEDIA_BASE_URL,
+    }
+
+    data_info = {
+        "total_records": sum(len(v) for v in _record_store.values()),
+        "commodities_with_data": sum(1 for v in _record_store.values() if v),
+        "record_counts": {k: len(v) for k, v in _record_store.items() if v},
+    }
+
+    api_test = {"status": "not_tested"}
+    if settings.EXIMPEDIA_CLIENT_ID and settings.EXIMPEDIA_CLIENT_SECRET:
+        try:
+            from app.core.eximpedia.token_manager import EximpediaTokenManager
+            tm = EximpediaTokenManager()
+            token = await tm.get_token()
+            api_test = {"status": "ok", "token_length": len(token) if token else 0}
+        except Exception as e:
+            api_test = {"status": "error", "error": str(e)}
+    else:
+        api_test = {"status": "missing_credentials"}
+
+    return {
+        "environment": env_info,
+        "data": data_info,
+        "api_connectivity": api_test,
+    }
