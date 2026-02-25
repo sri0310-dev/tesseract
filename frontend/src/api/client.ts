@@ -33,6 +33,9 @@ export const api = {
   commodityDeepDive: (params: DeepDiveParams) =>
     post<DeepDiveResult>('/intelligence/commodity/deep-dive', params),
 
+  commodityArrivals: (params: DeepDiveParams) =>
+    post<ArrivalsResult>('/intelligence/commodity/arrivals', params),
+
   // Corridors
   listCorridors: () => get<{ corridors: CorridorListItem[] }>(
     '/intelligence/corridors'
@@ -172,6 +175,57 @@ export interface DeepDiveResult {
   current_ipc: IPCResult;
   ipc_series: IPCPoint[];
   volume_summary: FlowResult;
+}
+
+export interface ArrivalRow {
+  origin: string;
+  outturn: string;
+  outturn_lbs: number | null;
+  nut_count: string;
+  last_7d_mt: number;
+  last_14d_mt: number;
+  last_30d_mt: number;
+  shipments_30d: number;
+  avg_fob_usd_per_mt: number | null;
+}
+
+export interface OriginMomentum {
+  origin: string;
+  last_7d_mt: number;
+  prior_7d_mt: number;
+  last_7d_shipments: number;
+  change_pct: number | null;
+  signal: string;
+}
+
+export interface PortArrival {
+  port: string;
+  last_7d_mt: number;
+  last_14d_mt: number;
+  last_30d_mt: number;
+  shipments_30d: number;
+  top_origins: string[];
+}
+
+export interface ImporterRow {
+  entity: string;
+  volume_mt: number;
+  value_usd: number;
+  shipments: number;
+  market_share_pct: number;
+  avg_price_per_mt: number | null;
+  top_outturns: { outturn: string; volume_mt: number }[];
+  top_origins: { country: string; volume_mt: number }[];
+  top_ports: string[];
+}
+
+export interface ArrivalsResult {
+  commodity: { hct_id: string; hct_name: string };
+  as_of: string;
+  arrivals_summary: ArrivalRow[];
+  origin_momentum: OriginMomentum[];
+  port_arrivals: PortArrival[];
+  top_importers: ImporterRow[];
 }
 
 export interface IPCResult {
